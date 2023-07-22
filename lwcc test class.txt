@@ -1,0 +1,235 @@
+
+
+global class  EmailNotification   implements vlocity_ins.VlocityOpenInterface {
+    global Boolean invokeMethod(String methodName, Map < String, Object > inputMap, Map < String, Object > outMap, Map < String, Object > options) {
+        inputMap.put('LwccLogo',Label.LwccLogo);
+        if (methodName.equals('Email')){
+            sendEmailNotification(inputMap,outMap);
+        }
+        if (methodName.equals('Task')) {
+            createTask(inputMap,outMap);
+        }
+        if (methodName.equals('getSubmissionLink')) {
+            getSubmissionLink(inputMap,outMap);
+        }
+        return true;
+    }
+
+    global void createTask(Map < String, Object > inputMap, Map < String, Object > outMap){
+        String emailTempalteName=String.valueOf(inputMap.get('EmailTemplateName'));
+
+        EmailTemplate et=[Select id,HtmlValue, Subject from EmailTemplate where name = :emailTempalteName limit 1];
+        
+        Task tk = new Task();
+        tk.Subject = replaceDynamicContent(inputMap,et.subject);
+        tk.Description = replaceDynamicContent(inputMap,et.htmlvalue);
+        tk.WhatId = String.valueOf(inputMap.get('RecordId'));
+
+        Database.SaveResult[] srList = Database.insert(new List<Task>{tk}, false);
+        for (Database.SaveResult sr : srList) {
+            if (sr.isSuccess()) {
+                // Operation was successful, so get the ID of the record that was processed
+                Change_Ownership__e evt = new Change_Ownership__e();
+                evt.Object_Type__c = 'Task';
+                evt.RecordId__c = sr.getId();
+                evt.UserId__c = String.valueOf(inputMap.get('UserId'));
+                insert evt;
+            }
+            else {
+                // Operation failed, so get all errors                
+                for(Database.Error err : sr.getErrors()) {
+                    System.debug('The following error has occurred.');                    
+                    System.debug(err.getStatusCode() + ': ' + err.getMessage());
+                }
+            }
+        }
+        return;
+    }
+
+    global void sendEmailNotification(Map < String, Object > inputMap, Map < String, Object > outMap){
+        system.debug('@@inputMap:::'+JSON.serialize(inputMap));
+        system.debug('@@inputMap.get(FirstPaymentAmount):::'+inputMap.get('FirstPaymentAmount'));
+        List<String> toAddresses =  new List<String>();
+        String emailTempalteName=String.valueOf(inputMap.get('EmailTemplateName'));
+        system.debug('@@emailTempalteName:::'+emailTempalteName);
+        inputMap.put('URLLink',Label.SubmissionLink);
+        
+        if(String.valueOf(inputMap.get('toEmailIds')).contains(';')){
+            toAddresses=(String.valueOf(inputMap.get('toEmailIds'))).replaceAll(';',',').split(',');
+        }
+        else{
+            toAddresses.add(String.valueOf(inputMap.get('toEmailIds')));
+        }
+        
+        EmailTemplate et=[Select id,HtmlValue, Subject from EmailTemplate where name = :emailTempalteName limit 1];
+        
+        //We instantiate our single email message object
+        Messaging.SingleEmailMessage mail = new Messaging.SingleEmailMessage();
+        
+        //Set Org Wide Email as From Email
+		String senderName = 'LWCC Information';
+		System.debug('@@@inputMap.get:::'+inputMap.get('senderName'));
+        if( inputMap.get('senderName') != null){
+        	senderName = String.valueOf(inputMap.get('senderName'));
+    	}
+		
+        System.debug('@@@senderName:::'+senderName);
+		List<OrgWideEmailAddress> orgEmailData = [SELECT Id FROM OrgWideEmailAddress WHERE DisplayName =: senderName Limit 1];
+        
+		System.debug('@@@orgEmailData:::'+orgEmailData);
+        //if(!orgEmailData.isEmpty()){
+		//	OrgWideEmailAddress orgWideEmailAddress = [SELECT Id FROM OrgWideEmailAddress WHERE DisplayName =: senderName Limit 1];
+         //   mail.setOrgWideEmailAddressId(orgWideEmailAddress.Id); 
+        //}
+        //else{
+            //mail.setReplyTo(fromEmailId);
+        	mail.setSenderDisplayName(String.valueOf(inputMap.get('senderName')));
+        //}
+		
+           
+        
+        //Assign the TO address to our mail object
+        mail.setToAddresses(toAddresses);
+        
+        // Assign Documents
+        List<String> attachIdList = new List<String>();
+        if(inputMap.get('fileAttachments')!=null ){
+            system.debug('@@inputMap.get(fileAttachments):::-->>'+inputMap.get('fileAttachments'));
+            List<object> attachIdsMap = (List<object>)inputMap.get('fileAttachments');
+            for(Object attacheIdData :attachIdsMap){
+                attachIdList.add(String.valueOf(attacheIdData));
+            }
+            system.debug('@@attachIdList:::-->>'+attachIdList);
+            if(attachIdList.Size()>0){
+                mail.setEntityAttachments(attachIdList);
+            }
+        }
+        
+        // Assign the CC addresses
+        List<String> ccAddresses = new List<String>();
+        if(inputMap.containsKey('ccEmailIds') && String.valueOf(inputMap.get('ccEmailIds'))!=null){
+            ccAddresses=(String.valueOf(inputMap.get('ccEmailIds'))).replaceAll(';',',').split(',');
+        }
+        ccAddresses.add('batstmail@lwcc.com'); // This is Compulsory
+        ccAddresses.add('marmik.kansara@psadvisory.com');
+        ccAddresses.add('kansaramarmik03@outlook.com');
+		mail.setCcAddresses(ccAddresses); 
+        
+        // Set the subject line for your email address.
+        mail.setSubject(replaceDynamicContent(inputMap,et.subject));
+        
+        //Specify any html - for example this will display a link in the email
+        mail.setHtmlBody(replaceDynamicContent(inputMap,et.htmlvalue));
+        //mail.setReplyTo(fromEmailId);
+        //mail.setSenderDisplayName(String.valueOf(inputMap.get('senderName')));
+        System.debug('@@@EmaiNotification:Mail-inputMap:::'+inputMap);
+        // Send the email
+        Messaging.sendEmail(new Messaging.SingleEmailMessage[] { mail });
+        return;
+    }
+    
+    public static string replaceDynamicContent(Map<String,Object> inputMap,String textToReplace){
+        
+        Pattern pattrn = Pattern.compile('\\{\\{[iI][fF]\\([a-zA-Z0-9\', .\\-]*\\)\\}\\}');
+        Matcher matcher = pattrn.matcher(textToReplace);
+        while(matcher.find()) {
+            String conditionalVariable=matcher.group(0).replaceAll('\\{\\{[iI][fF]\\(','').replaceAll('\\)\\}\\}','');
+            List<String> ConditionList=conditionalVariable.split(',\''); 
+            String dynamicData='';
+            if(ConditionList.size()>2){
+                if(inputMap.get(ConditionList[0])!=null && Boolean.valueOf(inputMap.get(ConditionList[0]))){
+                    dynamicData=ConditionList[1];
+                }else{
+                    dynamicData=ConditionList[2];
+                }
+            }
+            if(dynamicData.length()>1 && dynamicData.substring(dynamicData.length()-1)=='\''){
+                dynamicData=dynamicData.substring(0,dynamicData.length()-1);  
+            }else{
+                dynamicData='';
+            }
+            textToReplace=textToReplace.replaceAll('\\{\\{[iI][fF]\\('+conditionalVariable+'\\)\\}\\}', dynamicData);
+            
+        }        
+        
+        
+        pattrn = Pattern.compile('\\{\\{[a-zA-Z0-9]*\\}\\}');
+        matcher = pattrn.matcher(textToReplace);
+        while(matcher.find()) {
+            String variableName=matcher.group(0).replaceAll('\\{\\{','').replaceAll('\\}\\}','');
+            if(string.valueOf(inputMap.get(variableName))!=null){
+                textToReplace=textToReplace.replaceAll('\\{\\{'+variableName+'\\}\\}', string.valueOf(inputMap.get(variableName)));
+            }
+        }        
+        
+        return textToReplace;
+    }
+    
+    global void getSubmissionLink(Map < String, Object > inputMap, Map < String, Object > outMap){
+        outMap.put('SubmissionLink',Label.SubmissionLink);
+    }
+}
+
+
+----------------------------------- 
+/*@isTest
+public class EmailNotification_T {
+  
+    @isTest
+    public static void testSentEmail(){
+        
+            Map<String,Object> inputs=new Map<String,Object>();
+            Map<String,Object> output=new Map<String,Object>();
+            Map<String,Object> options=new Map<String,Object>();
+            
+            
+            inputs.put('fromEmailId','dbecnel@lwcc.com');
+        	inputs.put('toEmailIds','marmik.kansara@psadvisory.com');
+            inputs.put('senderName','TEST LWCC');
+            inputs.put('ccEmailIds','dbecnelTestD@lwcc.com');
+            inputs.put('EmailTemplateName','LWCC Submission Reserved - Incomplete');
+            inputs.put('LwccLogo',Label.LwccLogo);
+            
+            Test.startTest();
+            Boolean sentEmail = new EmailNotification().invokeMethod('Email', inputs, output, options);
+            System.assertEquals(true, sentEmail);
+            Test.stopTest();
+    }
+  
+    @isTest
+    static void testCreateTask() {
+        //Account
+        Map <String,Object> accountFieldMap = new Map <String,Object>();  
+            accountFieldMap.put('Name','TestAccount');
+            Account accountRec = (Account) TestDataFactory.operationOnObjectRec('insert','Account',accountFieldMap);
+		
+        Map<String,Object> inputs=new Map<String,Object>();
+        Map<String,Object> output=new Map<String,Object>();
+        Map<String,Object> options=new Map<String,Object>();
+        
+        inputs.put('EmailTemplateName','LWCC Submission Reserved - Incomplete');
+        inputs.put('RecordId', accountRec.Id);
+        inputs.put('UserId', 'testuser');
+        
+        Test.startTest();
+        Boolean createTask = new EmailNotification().invokeMethod('Task', inputs, output, options);
+        System.assertEquals(true, createTask);
+        Test.stopTest();
+        
+    }
+    @isTest
+    static void testGetSubmissionLink() {
+      
+		
+        Map<String,Object> inputs=new Map<String,Object>();
+        Map<String,Object> output=new Map<String,Object>();
+        Map<String,Object> options=new Map<String,Object>();
+        
+        
+        Test.startTest();
+        Boolean submissionLink = new EmailNotification().invokeMethod('getSubmissionLink', inputs, output, options);
+        System.assertEquals(true, submissionLink);
+        Test.stopTest();
+        
+    }
+}*/
